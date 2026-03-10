@@ -1,6 +1,94 @@
+/*
+ * TextHandler.ino — UTF-8 to UTF-16 conversion and display text formatting
+ *
+ * This file handles all text processing required to build display messages:
+ *   1. Converts UTF-8 encoded strings (from A2DP metadata, sensor readings,
+ *      or status messages) to the UTF-16 Big-Endian encoding required by the
+ *      car's display units.
+ *   2. Applies display-specific formatting escape sequences (alignment, font).
+ *   3. Assembles the complete ISO 15765-2 payload in DisplayMsg[].
+ *
+ * Display protocol:
+ *   The car display accepts a proprietary text display command (0x40 00 xx 03 …)
+ *   sent as an ISO 15765-2 multi-packet CAN message.  The payload contains
+ *   tagged fields:
+ *     0x10 — title/main  (middle line on most displays)
+ *     0x11 — album field (upper line)
+ *     0x12 — artist field (lower line)
+ *   Each field is prefixed with a character count byte, followed by optional
+ *   formatting escape sequences and then the UTF-16 encoded text.
+ *
+ * Supported Unicode ranges (display hardware limitation):
+ *   U+0000–U+024F  Basic Latin, Latin-1 Supplement, Latin Extended A/B
+ *   U+1E00–U+2C6F  Latin Extended Additional, General Punctuation, etc.
+ *   Cyrillic and characters outside these ranges are silently dropped.
+ *
+ * Dependencies:
+ *   - Global DisplayMsg buffer declared in EHU32.ino
+ *   - prepareMultiPacket() in CAN.ino
+ *
+ * Author: PNKP237 — https://github.com/PNKP237/EHU32
+ */
+
+/* ─────────────────────────── Display Escape Sequences ───────────────────────────
+ * The car display interprets UTF-16 encoded ESC sequences embedded in the text
+ * payload to control text alignment and font size.  All sequences use the
+ * 7-bit ASCII ESC character (U+001B = 0x001B) followed by '[' (0x005B) and
+ * a command suffix, terminated with 'm' (0x006D).
+ *
+ * Sequences (stored as UTF-16 BE byte pairs):
+ *
+ *   DIS_leftadjusted[14] = ESC [ f S _ g m
+ *     {0x00,0x1B, 0x00,0x5B, 0x00,0x66, 0x00,0x53, 0x00,0x5F, 0x00,0x67, 0x00,0x6D}
+ *     Left-aligns the following text.  Used for the main title (middle line)
+ *     with the standard/large font.
+ *
+ *   DIS_smallfont[14] = ESC [ f S _ d m
+ *     {0x00,0x1B, 0x00,0x5B, 0x00,0x66, 0x00,0x53, 0x00,0x5F, 0x00,0x64, 0x00,0x6D}
+ *     Left-aligns text in a smaller font.  Used for the upper (album) and
+ *     lower (artist) lines where space is limited.
+ *
+ *   DIS_centered[8] = ESC [ c m
+ *     {0x00,0x1B, 0x00,0x5B, 0x00,0x63, 0x00,0x6D}
+ *     Centers the following text.  Not currently used in the main code path
+ *     but available for status messages.
+ *
+ *   DIS_rightadjusted[8] = ESC [ r m
+ *     {0x00,0x1B, 0x00,0x5B, 0x00,0x72, 0x00,0x6D}
+ *     Right-aligns the following text.  Not currently used but available.
+ *
+ * Note: each escape sequence counts as (sizeof/2) characters towards the
+ *       field's character count byte in the CAN payload.
+ * ──────────────────────────────────────────────────────────────────────────────── */
 // below is data required to be included in every line - text formatting is based on those
 const char DIS_leftadjusted[14]={0x00,0x1B,0x00,0x5B,0x00,0x66,0x00,0x53,0x00,0x5F,0x00,0x67,0x00,0x6D}, DIS_smallfont[14]={0x00,0x1B,0x00,0x5B,0x00,0x66,0x00,0x53,0x00,0x5F,0x00,0x64,0x00,0x6D}, DIS_centered[8]={0x00, 0x1B, 0x00, 0x5B, 0x00, 0x63, 0x00, 0x6D}, DIS_rightadjusted[8]={0x00, 0x1B, 0x00, 0x5B, 0x00, 0x72, 0x00, 0x6D};
 
+/* utf8_to_utf16() — convert a null-terminated UTF-8 string to UTF-16 BE.
+ *
+ * Parameters:
+ *   utf8_buffer   — source string (e.g. AVRCP metadata, snprintf'd sensor value)
+ *   utf16_buffer  — destination buffer (must be at least 2× the UTF-8 length)
+ *
+ * Returns: the number of UTF-16 code units (characters) written.  The byte
+ *          count written to utf16_buffer is (return value × 2).
+ *
+ * Encoding rules:
+ *   1-byte (0xxxxxxx): codepoints U+0000–U+007F — stored as 0x00, byte
+ *   2-byte (110xxxxx 10xxxxxx): U+0080–U+07FF
+ *   3-byte (1110xxxx 10xxxxxx 10xxxxxx): U+0800–U+FFFF
+ *   4-byte (11110xxx …): U+10000–U+10FFFF — stored as UTF-16 surrogate pair
+ *     High surrogate: 0xD800 + (codepoint >> 10)
+ *     Low surrogate:  0xDC00 + (codepoint & 0x3FF)
+ *
+ * Character filtering:
+ *   Only codepoints in U+0000–U+024F and U+1E00–U+2C6F are written.
+ *   All other codepoints are silently skipped.  This matches the character
+ *   sets supported by the GM/Vauxhall display units (Western European and
+ *   extended Latin alphabets).  Cyrillic (U+0400–U+04FF) is NOT supported.
+ *
+ * On invalid UTF-8 (unrecognised leading byte), the function returns
+ * immediately with the count of characters processed so far.
+ */
 // converts an UTF-8 buffer to UTF-16, filters out unsupported chars, returns the amount of chars processed
 unsigned int utf8_to_utf16(const char* utf8_buffer, char* utf16_buffer){
   unsigned int utf16_bytecount=0;
@@ -49,6 +137,47 @@ unsigned int utf8_to_utf16(const char* utf8_buffer, char* utf16_buffer){
   return utf16_bytecount/2;  // amount of chars processed
 }
 
+/* processDisplayMessage() — build a complete display payload in DisplayMsg[].
+ *
+ * Parameters:
+ *   upper_line_buffer — UTF-8 text for the upper (album) line; nullptr = omit.
+ *   middle_line_buffer — UTF-8 text for the middle (title) line; nullptr = omit.
+ *   lower_line_buffer  — UTF-8 text for the lower (artist) line; nullptr = omit.
+ *
+ * Returns: total number of bytes written to DisplayMsg[] (= ISO 15765-2 payload
+ *          size passed to prepareMultiPacket()).
+ *
+ * Message structure written to DisplayMsg[]:
+ *   [0]   = total payload size in bytes (filled in at the end)
+ *   [1]   = 0x40  (display write command)
+ *   [2]   = 0x00
+ *   [3]   = payload size − 3 (filled in at the end)
+ *   [4]   = 0x03  (text display type)
+ *   — Title field (middle line) —
+ *   [5]   = 0x10  (field tag: title)
+ *   [6]   = character count for field 0x10 (including formatting chars)
+ *   [7…]  = DIS_leftadjusted escape (7 UTF-16 chars) + UTF-16 title text
+ *   — Album field (upper line) —
+ *   [n]   = 0x11  (field tag: album)
+ *   [n+1] = character count for field 0x11
+ *   [n+2…]= DIS_smallfont escape (7 UTF-16 chars) + UTF-16 album text
+ *   — Artist field (lower line) —
+ *   [m]   = 0x12  (field tag: artist)
+ *   [m+1] = character count for field 0x12
+ *   [m+2…]= DIS_smallfont escape (7 UTF-16 chars) + UTF-16 artist text
+ *
+ * Special cases:
+ *   - If the middle line converts to 0 characters (empty or unsupported chars),
+ *     it is replaced with "Playing" to indicate audio is active.
+ *   - Formatting escape sequences are omitted for lines with 0 or 1 characters
+ *     to save CAN frame bandwidth.
+ *   - If the total byte count would produce a completely full last CAN frame
+ *     (i.e. (last_byte_written+1) % 7 == 0), a padding space (0x00 0x20) is
+ *     appended.  This is because some displays ignore messages whose last
+ *     consecutive frame is completely full (see EHU32 wiki for details).
+ *   - Maximum payload size is capped at 254 bytes (DisplayMsg[0] is a single
+ *     byte; excess data is truncated but causes no harm).
+ */
 // converts UTF-8 strings from arguments to real UTF-16, then compiles a full display message with formatting; returns total bytes written as part of message payload
 int processDisplayMessage(char* upper_line_buffer, char* middle_line_buffer, char* lower_line_buffer){
   static char utf16_middle_line[256], utf16_lower_line[256], utf16_upper_line[256];
