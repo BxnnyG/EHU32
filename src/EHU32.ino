@@ -1,3 +1,4 @@
+#include "config.h"
 #include "AudioTools.h"
 #include "BluetoothA2DPSink.h"
 #include "esp_sleep.h"
@@ -51,8 +52,7 @@
 #define OTA_begin (1 << 22)
 #define OTA_abort (1 << 23)
 
-// pin definitions
-const int PCM_MUTE_CTL=23, PCM_ENABLE=27;            // D23 controls PCM5102s soft-mute function, D27 enables PCM5102s power
+// pin definitions — see config.h
 // RTOS stuff
 TaskHandle_t canReceiveTaskHandle, canDisplayTaskHandle, canProcessTaskHandle, canTransmitTaskHandle, canWatchdogTaskHandle, canAirConMacroTaskHandle, canMessageDecoderTaskHandle, eventHandlerTaskHandle;
 QueueHandle_t canRxQueue, canTxQueue, canDispQueue;
@@ -83,7 +83,7 @@ void prepareMultiPacket(int bytes_processed, char* buffer_to_read);
 int processDisplayMessage(char* upper_line_buffer, char* middle_line_buffer, char* lower_line_buffer);
 
 void setup(){
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_4, 0);    // this will wake the ESP32 up if there's CAN activity
+  esp_sleep_enable_ext0_wakeup(CAN_RX_PIN, 0);    // this will wake the ESP32 up if there's CAN activity
   pinMode(PCM_MUTE_CTL, OUTPUT);
   pinMode(PCM_ENABLE, OUTPUT);          // control PCM5102 power setting
   digitalWrite(PCM_MUTE_CTL, HIGH);
@@ -115,17 +115,17 @@ void setup(){
   }
   bool init_setupComplete=settings.getBool("setupcomplete", 0);   // prefs init
   if(!init_setupComplete){     // this should only be executed on first boot
-    while(twai_receive(&testMsg, portMAX_DELAY)!=ESP_OK && testMsg.identifier!=0x6C1 && (testMsg.data[2]!=0x40 || testMsg.data[2]!=0xC0)) {} // wait for the initial 0x6C1 c0/40 then start the timer
+    while(twai_receive(&testMsg, portMAX_DELAY)!=ESP_OK && testMsg.identifier!=CAN_ID_RADIO_DISPLAY && (testMsg.data[2]!=0x40 || testMsg.data[2]!=0xC0)) {} // wait for the initial 0x6C1 c0/40 then start the timer
     unsigned long millis_init_start=millis();       // got 0x6C1, assume radio started now
     bool init_usedCANids[16];     // represents 0x6C0 to 0x6CF
     while(twai_receive(&testMsg, portMAX_DELAY)==ESP_OK && (millis_init_start+20000>millis())){ // keep receiving all msgs and log everything from 0x6C0 to 0x6CF for 10 secs
       if((testMsg.identifier & 0xFF0)==0x6C0 && !init_usedCANids[testMsg.identifier-0x6c0]){      // allows 0x6C0 to 0x6CF
         init_usedCANids[testMsg.identifier-0x6c0]=1;    // if got a hit, mark it the ID as in use
-        if(testMsg.identifier==0x6C7){
+        if(testMsg.identifier==CAN_ID_UHP_PRESENCE){
           settings.putBool("uhppresent", 1);
           vehicle_UHP_present=1;
         }
-        if(testMsg.identifier==0x6C8){      // ECC doesn't start until the key is at ignition so that's relatively pointless for now
+        if(testMsg.identifier==CAN_ID_ECC_PRESENCE){      // ECC doesn't start until the key is at ignition so that's relatively pointless for now
           settings.putBool("eccpresent", 1);
           vehicle_ECC_present=1;
         }
@@ -155,10 +155,10 @@ void setup(){
     }
     if(displayMsgIdentifier==0){
       if(init_usedCANids[8]==1){
-        displayMsgIdentifier=0x6C8;
+        displayMsgIdentifier=CAN_ID_ECC_PRESENCE;
         DEBUG_PRINTLN("\nCAN SETUP: Unable to find a valid unused CAN ID, but detected ECC -> using 0x6C8");
       } else {
-        displayMsgIdentifier=0x6C1;
+        displayMsgIdentifier=CAN_ID_RADIO_DISPLAY;
         DEBUG_PRINTLN("\nCAN SETUP: Unable to find a valid unused CAN ID. Falling back to stock -> using 0x6C1");
       }
     }

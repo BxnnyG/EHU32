@@ -1,5 +1,5 @@
-const char* ssid = "EHU32-OTA";
-const char* password = "ehu32updater";
+const char* ssid = OTA_SSID;
+const char* password = OTA_PASSWORD;
 volatile bool OTA_running=0, OTA_finished=0, OTA_progressing=0;
 #ifndef DEBUG
 // initialize OTA functionality as a way to update firmware; this disables A2DP functionality!
@@ -83,7 +83,7 @@ void OTA_Handle(){
     }
     ArduinoOTA.handle();
     if(!OTA_progressing){                     // timeout after 10 minutes of no OTA start
-      if((time_started+600000)<millis()){
+      if((time_started+OTA_TIMEOUT_MS)<millis()){
         vTaskDelay(pdMS_TO_TICKS(1000));
         ESP.restart();
       }

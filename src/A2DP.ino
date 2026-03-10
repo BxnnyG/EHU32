@@ -56,9 +56,9 @@ void a2dp_audio_state_changed(esp_a2d_audio_state_t state, void *ptr){  // callb
 // start A2DP audio service
 void a2dp_init(){
   auto i2s_conf=i2s.defaultConfig();
-  i2s_conf.pin_bck=26;
-  i2s_conf.pin_ws=25;
-  i2s_conf.pin_data=22;
+  i2s_conf.pin_bck=I2S_PIN_BCK;
+  i2s_conf.pin_ws=I2S_PIN_WS;
+  i2s_conf.pin_data=I2S_PIN_DATA;
   i2s.begin(i2s_conf);
   a2dp_sink.set_avrc_metadata_callback(avrc_metadata_callback);
   a2dp_sink.set_avrc_metadata_attribute_mask(ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST | ESP_AVRC_MD_ATTR_ALBUM);
@@ -72,7 +72,7 @@ void a2dp_init(){
   setFlag(a2dp_started);
   DEBUG_PRINTLN("A2DP: Started!");
   disp_mode=0;                      // set display mode to audio metadata on boot
-  writeTextToDisplay(1, "EHU32 v0.9.5", "Bluetooth on", "Waiting for connection...");
+  writeTextToDisplay(1, "EHU32 v" EHU32_VERSION, "Bluetooth on", "Waiting for connection...");
 }
 
 // handles events such as connecion/disconnection and audio play/pause
