@@ -15,7 +15,7 @@
  *   - Radio button long-press action handlers (canActionEhuButton0–9)
  *   - DEBUG-only serial simulation task (CANsimTask)
  *
- * CAN bus speed: 95 kbit/s — the GM/Vauxhall/Opel MS-CAN (Middle Speed CAN)
+ * CAN bus speed: ~95.24 kbit/s — the GM/Vauxhall/Opel MS-CAN (Middle Speed CAN)
  * used by all NCDC-generation radios (CD30, CD30MP3, CD40USB, CD70, DVD90).
  *
  * ISO 15765-2 framing (used for all display messages):

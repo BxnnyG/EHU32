@@ -164,7 +164,11 @@ void OTA_start(){
  *      progress, call ESP.restart() immediately.
  *   7. Success: if OTA_finished is set (upload complete), wait 1 s and restart
  *      to boot the new firmware.
+ *
+ * Note: `time_started` is initialised to 0 and set to millis() only after
+ *       OTA_start() succeeds, so the 10-minute timer begins at AP start time.
  */
+void OTA_Handle(){
   unsigned long time_started=0;
   while(1){
     while(!checkFlag(OTA_begin)){
