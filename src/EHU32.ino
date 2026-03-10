@@ -12,6 +12,7 @@
  *   - Provides over-the-air firmware updates through a Wi-Fi soft AP
  *
  * Dependencies:
+ *   - config.h (pin definitions, CAN IDs, OTA password)
  *   - ESP32-AudioTools (I2S streaming)
  *   - ESP32-A2DP (Bluetooth A2DP sink + AVRCP)
  *   - ESP-IDF TWAI driver (bundled with the Arduino ESP32 core)
@@ -21,6 +22,7 @@
  * Author: PNKP237 — https://github.com/PNKP237/EHU32
  */
 
+#include "config.h"
 #include "AudioTools.h"
 #include "BluetoothA2DPSink.h"
 #include "esp_sleep.h"
@@ -159,12 +161,11 @@
 #define OTA_abort (1 << 23)
 
 /* ──────────────────────────────── Pin Definitions ────────────────────────────── */
-/* GPIO 23 — PCM5102A soft-mute control:  HIGH = normal audio output (unmuted)
- *                                         LOW  = audio muted (silent)            */
-/* GPIO 27 — PCM5102A power enable (also releases SN65HVD230 from standby):
- *            HIGH = device powered off / in standby
- *            LOW  = device enabled (active-low)                                  */
-const int PCM_MUTE_CTL=23, PCM_ENABLE=27;
+/* All pin assignments are defined in config.h:
+ *   PCM_MUTE_CTL (23) — PCM5102A soft-mute control: HIGH = unmuted, LOW = muted
+ *   PCM_ENABLE   (27) — PCM5102A power enable (active LOW); also releases SN65HVD230
+ *   CAN_TX_PIN   (5)  — CAN transceiver TX
+ *   CAN_RX_PIN   (4)  — CAN transceiver RX (also ext0 deep-sleep wake-up source)  */
 
 /* ──────────────────────────── FreeRTOS Handles ───────────────────────────────────
  * RTOS Task Architecture — two cores:
@@ -300,9 +301,9 @@ int processDisplayMessage(char* upper_line_buffer, char* middle_line_buffer, cha
  * Step 9: Create and pin all RTOS tasks to their respective cores.
  */
 void setup(){
-  /* Step 1 — Wake-up source: GPIO 4 is the CAN RX line; a LOW level (dominant
-   * CAN bit) will wake the ESP32 from deep sleep. */
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_4, 0);
+  /* Step 1 — Wake-up source: CAN_RX_PIN (GPIO 4) is the CAN RX line; a LOW level
+   * (dominant CAN bit) will wake the ESP32 from deep sleep. */
+  esp_sleep_enable_ext0_wakeup(CAN_RX_PIN, 0);
   pinMode(PCM_MUTE_CTL, OUTPUT);
   pinMode(PCM_ENABLE, OUTPUT);          // control PCM5102 power setting
   digitalWrite(PCM_MUTE_CTL, HIGH);    // unmuted — audio path ready
@@ -341,9 +342,9 @@ void setup(){
   }
   bool init_setupComplete=settings.getBool("setupcomplete", 0);
   if(!init_setupComplete){
-    /* Step 6a — Wait for the radio's 0x6C1 boot message with data[2]==0x40
-     * or 0xC0 (the standard CD30/CD40/CD70 init pattern). */
-    while(twai_receive(&testMsg, portMAX_DELAY)!=ESP_OK && testMsg.identifier!=0x6C1 && (testMsg.data[2]!=0x40 || testMsg.data[2]!=0xC0)) {}
+    /* Step 6a — Wait for the radio's CAN_ID_RADIO_DISPLAY (0x6C1) boot message
+     * with data[2]==0x40 or 0xC0 (the standard CD30/CD40/CD70 init pattern). */
+    while(twai_receive(&testMsg, portMAX_DELAY)!=ESP_OK && testMsg.identifier!=CAN_ID_RADIO_DISPLAY && (testMsg.data[2]!=0x40 || testMsg.data[2]!=0xC0)) {}
     unsigned long millis_init_start=millis();       // got 0x6C1, assume radio started now
     /* Step 6b — Scan 20 s of traffic and record which IDs in the 0x6C0–0x6CF
      * range are already active.  Index i maps to ID (0x6C0 + i). */
@@ -351,13 +352,13 @@ void setup(){
     while(twai_receive(&testMsg, portMAX_DELAY)==ESP_OK && (millis_init_start+20000>millis())){
       if((testMsg.identifier & 0xFF0)==0x6C0 && !init_usedCANids[testMsg.identifier-0x6c0]){
         init_usedCANids[testMsg.identifier-0x6c0]=1;
-        if(testMsg.identifier==0x6C7){
-          /* 0x6C7 is the UHP (factory Bluetooth hands-free) module. */
+        if(testMsg.identifier==CAN_ID_UHP_PRESENCE){
+          /* CAN_ID_UHP_PRESENCE (0x6C7) — UHP (factory Bluetooth hands-free) module. */
           settings.putBool("uhppresent", 1);
           vehicle_UHP_present=1;
         }
-        if(testMsg.identifier==0x6C8){
-          /* 0x6C8 is the ECC (Electronic Climate Control) module.
+        if(testMsg.identifier==CAN_ID_ECC_PRESENCE){
+          /* CAN_ID_ECC_PRESENCE (0x6C8) — ECC (Electronic Climate Control) module.
            * Note: ECC only transmits after key-at-ignition. */
           settings.putBool("eccpresent", 1);
           vehicle_ECC_present=1;
@@ -394,10 +395,10 @@ void setup(){
     }
     if(displayMsgIdentifier==0){
       if(init_usedCANids[8]==1){
-        displayMsgIdentifier=0x6C8;
+        displayMsgIdentifier=CAN_ID_ECC_PRESENCE;
         DEBUG_PRINTLN("\nCAN SETUP: Unable to find a valid unused CAN ID, but detected ECC -> using 0x6C8");
       } else {
-        displayMsgIdentifier=0x6C1;
+        displayMsgIdentifier=CAN_ID_RADIO_DISPLAY;
         DEBUG_PRINTLN("\nCAN SETUP: Unable to find a valid unused CAN ID. Falling back to stock -> using 0x6C1");
       }
     }

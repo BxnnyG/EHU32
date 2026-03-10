@@ -10,25 +10,25 @@
  *   1. Unique SSID  – The hotspot name is derived from the last two bytes of the
  *      ESP32's soft-AP MAC address (e.g. "EHU32-A1B2"), so multiple units can be
  *      told apart and only the intended device is targeted.
- *   2. Wi-Fi password – The hotspot is password-protected ("ehu32updater").
+ *   2. Wi-Fi password – The hotspot is password-protected (see OTA_PASSWORD in config.h).
  *      This prevents neighbours from connecting at all.
  *   3. OTA password  – Even after connecting to the Wi-Fi, the ArduinoOTA
  *      handshake requires the same password before accepting a firmware upload.
  *      This adds a second layer against accidental or malicious flashing.
  *
  * Changing the password:
- *   Update the string passed to both WiFi.softAP() and ArduinoOTA.setPassword()
- *   below, keeping both values in sync.
+ *   Update OTA_PASSWORD in config.h — it is applied to both WiFi.softAP() and
+ *   ArduinoOTA.setPassword() automatically.
  *
  * Timeout:
- *   OTA mode times out automatically after 10 minutes with no upload activity
- *   and the device resets back to normal operation.
+ *   OTA mode times out automatically after OTA_TIMEOUT_MS milliseconds (default 10 min)
+ *   with no upload activity and the device resets back to normal operation.
  *   Pressing button 8 for ≥5 s while in OTA mode aborts and resets immediately.
  */
 
 // Wi-Fi AP credentials – ssid is filled at runtime with the device MAC address
 char ssid[20];
-const char* password = "ehu32updater";
+const char* password = OTA_PASSWORD;  // defined in config.h
 
 /* OTA state machine variables:
  *
@@ -88,11 +88,11 @@ void OTA_start(){
     // Show the hotspot name and IP on the car display so the user knows what to connect to
     char ota_info[48];
     snprintf(ota_info, sizeof(ota_info), "SSID: %s", ssid);
-    writeTextToDisplay(1, "OTA Update Mode", ota_info, "Pass: ehu32updater");
+    writeTextToDisplay(1, "OTA Update Mode", ota_info, "Pass: " OTA_PASSWORD);
     ArduinoOTA
       .setMdnsEnabled(false)
       .setRebootOnSuccess(true)
-      .setPassword("ehu32updater")  // OTA-level auth: second layer on top of Wi-Fi password
+      .setPassword(OTA_PASSWORD)  // OTA-level auth: second layer on top of Wi-Fi password
       .onStart([]() {
         String type;
         if (ArduinoOTA.getCommand() == U_FLASH)
@@ -180,7 +180,7 @@ void OTA_Handle(){
     }
     ArduinoOTA.handle();
     if(!OTA_progressing){                     // timeout after 10 minutes of no OTA start
-      if((time_started+600000)<millis()){
+      if((time_started+OTA_TIMEOUT_MS)<millis()){
         vTaskDelay(pdMS_TO_TICKS(1000));
         ESP.restart();
       }

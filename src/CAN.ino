@@ -55,63 +55,63 @@ volatile uint8_t canISO_frameSpacing=0;
 
 /* ──────────────────────────── Static CAN Message Definitions ────────────────────
  *
- * Scroll wheel / radio panel (CAN ID 0x201, 3 bytes):
+ * Scroll wheel / radio panel (CAN_ID_SWC_SCROLL = 0x201, 3 bytes):
  *   Byte 0: button state (0x08 = scroll event, 0x01 = pressed, 0x00 = released)
  *   Byte 1: button identifier (0x6A = scroll wheel)
  *   Byte 2: step value (0x01 = one step up / clockwise, 0xFF = one step down)
  *
- * Scroll wheel button press (CAN ID 0x206, 3 bytes):
+ * Scroll wheel button press (CAN_ID_SWC_BUTTON = 0x206, 3 bytes):
  *   Byte 0: state (0x01 = pressed, 0x00 = released)
  *   Byte 1: button identifier (0x84 = scroll wheel centre button)
  *   Byte 2: hold counter (0x00 = initial press, 0x02 = released)
  *
- * AC panel knob (CAN ID 0x208, 3 bytes):
+ * AC panel knob (CAN_ID_AC_BUTTON = 0x208, 3 bytes):
  *   Byte 0: event type (0x08 = scroll, 0x01 = pressed, 0x00 = released)
  *   Byte 1: button identifier (0x16 = temp knob scroll, 0x17 = temp knob press)
  *   Byte 2: step value (0x01 = up, 0xFF = down, 0x00 = press, 0x02 = release)
  *
- * Measurement request to DIS (CAN ID 0x246, up to 7 bytes, KWP-2000 format):
+ * Measurement request to DIS (CAN_ID_DIS_REQUEST = 0x246, up to 7 bytes, KWP-2000 format):
  *   {0x06, 0xAA, 0x01, 0x01, block0, block1, block2}
  *   0xAA = ReadDataByLocalIdentifier service, 0x01 0x01 = parameter group
  *   block IDs: 0x0B=coolant, 0x0E=speed, 0x13=battery voltage
  *
- * Measurement request to ECC (CAN ID 0x248, same KWP-2000 format):
+ * Measurement request to ECC (CAN_ID_ECC_REQUEST = 0x248, same KWP-2000 format):
  *   block IDs: 0x07=battery voltage, 0x10=coolant, 0x11=RPM+speed
  *
- * Voltage / coolant single-block requests (CAN ID 0x246 or 0x248, 5 bytes):
+ * Voltage / coolant single-block requests (CAN_ID_DIS_REQUEST or CAN_ID_ECC_REQUEST, 5 bytes):
  *   {0x04, 0xAA, 0x01, 0x01, blockID}
  * ──────────────────────────────────────────────────────────────────────────────── */
-const twai_message_t  simulate_scroll_up={ .identifier=0x201, .data_length_code=3, .data={0x08, 0x6A, 0x01}},       // scroll wheel: one step up
-                      simulate_scroll_down={ .identifier=0x201, .data_length_code=3, .data={0x08, 0x6A, 0xFF}},     // scroll wheel: one step down
-                      simulate_scroll_press={ .identifier=0x206, .data_length_code=3, .data={0x01, 0x84, 0x0}},    // scroll wheel centre: pressed
-                      simulate_scroll_release={ .identifier=0x206, .data_length_code=3, .data={0x0, 0x84, 0x02}},  // scroll wheel centre: released
-                      Msg_ACmacro_down={ .identifier=0x208, .data_length_code=3, .data={0x08, 0x16, 0x01}},        // AC temp knob: one step down (towards cooler)
-                      Msg_ACmacro_up={ .identifier=0x208, .data_length_code=3, .data={0x08, 0x16, 0xFF}},          // AC temp knob: one step up (towards warmer)
-                      Msg_ACmacro_press={ .identifier=0x208, .data_length_code=3, .data={0x01, 0x17, 0x0}},        // AC temp knob: pressed
-                      Msg_ACmacro_release={ .identifier=0x208, .data_length_code=3, .data={0x0, 0x17, 0x02}},      // AC temp knob: released
-                      Msg_MeasurementRequestDIS={ .identifier=0x246, .data_length_code=7, .data={0x06, 0xAA, 0x01, 0x01, 0x0B, 0x0E, 0x13}},  // request coolant + speed + voltage from DIS
-                      Msg_MeasurementRequestECC={ .identifier=0x248, .data_length_code=7, .data={0x06, 0xAA, 0x01, 0x01, 0x07, 0x10, 0x11}},  // request voltage + coolant + RPM/speed from ECC
-                      Msg_VoltageRequestDIS={ .identifier=0x246, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x13}},      // request battery voltage from DIS only
-                      Msg_CoolantRequestDIS={ .identifier=0x246, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x0B}},     // request coolant temperature from DIS only
-                      Msg_CoolantRequestECC={ .identifier=0x248, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x10}};     // request coolant temperature from ECC only
+const twai_message_t  simulate_scroll_up={ .identifier=CAN_ID_SWC_SCROLL, .data_length_code=3, .data={0x08, 0x6A, 0x01}},       // scroll wheel: one step up
+                      simulate_scroll_down={ .identifier=CAN_ID_SWC_SCROLL, .data_length_code=3, .data={0x08, 0x6A, 0xFF}},     // scroll wheel: one step down
+                      simulate_scroll_press={ .identifier=CAN_ID_SWC_BUTTON, .data_length_code=3, .data={0x01, 0x84, 0x0}},    // scroll wheel centre: pressed
+                      simulate_scroll_release={ .identifier=CAN_ID_SWC_BUTTON, .data_length_code=3, .data={0x0, 0x84, 0x02}},  // scroll wheel centre: released
+                      Msg_ACmacro_down={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x08, 0x16, 0x01}},        // AC temp knob: one step down (towards cooler)
+                      Msg_ACmacro_up={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x08, 0x16, 0xFF}},          // AC temp knob: one step up (towards warmer)
+                      Msg_ACmacro_press={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x01, 0x17, 0x0}},        // AC temp knob: pressed
+                      Msg_ACmacro_release={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x0, 0x17, 0x02}},      // AC temp knob: released
+                      Msg_MeasurementRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=7, .data={0x06, 0xAA, 0x01, 0x01, 0x0B, 0x0E, 0x13}},  // request coolant + speed + voltage from DIS
+                      Msg_MeasurementRequestECC={ .identifier=CAN_ID_ECC_REQUEST, .data_length_code=7, .data={0x06, 0xAA, 0x01, 0x01, 0x07, 0x10, 0x11}},  // request voltage + coolant + RPM/speed from ECC
+                      Msg_VoltageRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x13}},      // request battery voltage from DIS only
+                      Msg_CoolantRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x0B}},     // request coolant temperature from DIS only
+                      Msg_CoolantRequestECC={ .identifier=CAN_ID_ECC_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x10}};     // request coolant temperature from ECC only
 
-/* Msg_PreventDisplayUpdate — sent to 0x2C1 immediately after the radio's 0x6C1
- * first frame is detected.  This is a forged ISO 15765-2 flow-control "Continue
- * to Send" frame: {0x30, 0x00, 0x7F, …} where 0x30=CTS, 0x00=no block limit,
+/* Msg_PreventDisplayUpdate — sent to CAN_ID_DISPLAY_WRITE (0x2C1) immediately after
+ * the radio's 0x6C1 first frame is detected.  This is a forged ISO 15765-2 flow-control
+ * "Continue to Send" frame: {0x30, 0x00, 0x7F, …} where 0x30=CTS, 0x00=no block limit,
  * 0x7F=127 ms minimum inter-frame spacing (maximum allowed by the standard).
  * By replying to the radio's first frame ourselves, we consume the radio's
  * transmission slot and can then transmit EHU32's own first frame in its place.
  *
- * Msg_AbortTransmission — sends {0x32, …} to 0x2C1, which is an ISO 15765-2
- * "Abort" flow-control value.  Forces the radio to stop its current multi-frame
- * sequence.  Use only as a last resort since some displays react to 0x32 with a
- * soft-reset.
+ * Msg_AbortTransmission — sends {0x32, …} to CAN_ID_DISPLAY_WRITE (0x2C1), which is an
+ * ISO 15765-2 "Abort" flow-control value.  Forces the radio to stop its current
+ * multi-frame sequence.  Use only as a last resort since some displays react to 0x32
+ * with a soft-reset.
  *
  * Note: the .ss (single-shot) flag cannot be set via the designated initialiser
  * because it lives inside a union in twai_message_t.  It is set in canReceiveTask
  * and canTransmitTask at runtime. */
-twai_message_t  Msg_PreventDisplayUpdate={ .identifier=0x2C1, .data_length_code=8, .data={0x30, 0x0, 0x7F, 0, 0, 0, 0, 0}},
-                Msg_AbortTransmission={ .identifier=0x2C1, .data_length_code=8, .data={0x32, 0x0, 0, 0, 0, 0, 0, 0}};     // can have unforseen consequences such as resets! use as last resort
+twai_message_t  Msg_PreventDisplayUpdate={ .identifier=CAN_ID_DISPLAY_WRITE, .data_length_code=8, .data={0x30, 0x0, 0x7F, 0, 0, 0, 0, 0}},
+                Msg_AbortTransmission={ .identifier=CAN_ID_DISPLAY_WRITE, .data_length_code=8, .data={0x32, 0x0, 0, 0, 0, 0, 0, 0}};     // can have unforseen consequences such as resets! use as last resort
 
 /* twai_init() — initialise the ESP-IDF TWAI (CAN) driver at 95 kbit/s.
  *
@@ -129,7 +129,7 @@ twai_message_t  Msg_PreventDisplayUpdate={ .identifier=0x2C1, .data_length_code=
  */
 // initializing CAN communication
 void twai_init(){
-  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_5, GPIO_NUM_4, TWAI_MODE_NORMAL);         // CAN bus set up
+  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);         // CAN bus set up
   g_config.rx_queue_len=40;
   g_config.tx_queue_len=5;
   g_config.intr_flags=(ESP_INTR_FLAG_NMI & ESP_INTR_FLAG_IRAM);   // run the TWAI driver at the highest possible priority
@@ -188,7 +188,7 @@ void twai_init(){
  */
 // this task only reads CAN messages, filters them and enqueues them to be decoded ansynchronously. 0x6C1 is a special case, as the radio message has to be blocked ASAP
 void canReceiveTask(void *pvParameters){
-  static twai_message_t Recvd_CAN_MSG, DummyFirstFrame={ .identifier=0x6C1, .data_length_code=8, .data={0x10, 0xA7, 0x50, 0x00, 0xA4, 0x03, 0x10, 0x13}};
+  static twai_message_t Recvd_CAN_MSG, DummyFirstFrame={ .identifier=CAN_ID_RADIO_DISPLAY, .data_length_code=8, .data={0x10, 0xA7, 0x50, 0x00, 0xA4, 0x03, 0x10, 0x13}};
   uint32_t alerts_FlowCtl;        // separate buffer for the flow control alerts, prevents race conditions with the other task which also uses alerts
   bool allowDisplayBlocking=0, firstAckReceived=0, overwriteAttemped=0;
   uint32_t flowCtlUsed=(displayMsgIdentifier-0x400);  // set from memory, if using 0x6C0 flow control will be 0x2C0 etc.
@@ -198,7 +198,7 @@ void canReceiveTask(void *pvParameters){
     allowDisplayBlocking=checkFlag(CAN_allowAutoRefresh);   // checking earlier improves performance, there's very little time to send that message, otherwise we get error frames (because of the same ID)
     if(twai_receive(&Recvd_CAN_MSG, portMAX_DELAY)==ESP_OK){
       switch(Recvd_CAN_MSG.identifier){
-        case 0x6C1: {
+        case CAN_ID_RADIO_DISPLAY: {
           if(disp_mode!=-1){            // don't bother checking the data if there's no need to update the display
             if(Recvd_CAN_MSG.data[0]==0x10 && (Recvd_CAN_MSG.data[2]==0x40 || Recvd_CAN_MSG.data[2]==0xC0 || (Recvd_CAN_MSG.data[2]==0x50 && Recvd_CAN_MSG.data[1]==0x4A)) && Recvd_CAN_MSG.data[5]==0x03 && (disp_mode!=0 || allowDisplayBlocking)){       // another task processes the data since we can't do that here
               twai_transmit(&Msg_PreventDisplayUpdate, pdMS_TO_TICKS(30));  // radio blocking msg has to be transmitted ASAP, which is why we skip the queue
@@ -219,18 +219,18 @@ void canReceiveTask(void *pvParameters){
             }
           }
         }
-        case 0x201:
-        case 0x206:
-        case 0x208:
-        case 0x501:
-        case 0x546:
-        case 0x548:
-        case 0x4E8:
-        case 0x6C8:
+        case CAN_ID_SWC_SCROLL:
+        case CAN_ID_SWC_BUTTON:
+        case CAN_ID_AC_BUTTON:
+        case CAN_ID_RADIO_POWER:
+        case CAN_ID_DIS_RESPONSE:
+        case CAN_ID_ECC_RESPONSE:
+        case CAN_ID_RESERVED_4E8:
+        case CAN_ID_ECC_PRESENCE:
           xQueueSend(canRxQueue, &Recvd_CAN_MSG, portMAX_DELAY);      // queue the message contents to be read at a later time
           break;
-        case 0x2C1:{        // this attempts to invalidate the radio's display call with identifier 0x6C1
-          if(flowCtlUsed==0x2C1){       // old/backup logic for radio messages on 0x6C1
+        case CAN_ID_DISPLAY_WRITE:{        // this attempts to invalidate the radio's display call with identifier 0x6C1
+          if(flowCtlUsed==CAN_ID_DISPLAY_WRITE){       // old/backup logic for radio messages on 0x6C1
             if(firstAckReceived || !overwriteAttemped){          // disregard the first flow control frame meant for the radio unit ONLY if it was a result of retransmission to mask the radio's display update
               waitForFlag(CAN_MessageReady, pdMS_TO_TICKS(20));   // this is blocking a lot of stuff so gotta find a sweet spot for how long to block for
               if(Recvd_CAN_MSG.data[0]==0x30){
@@ -243,7 +243,7 @@ void canReceiveTask(void *pvParameters){
               firstAckReceived=1;   // flow control not meant for EHU32, set the switch and wait for the second one
             }
           }
-          if(overwriteAttemped && flowCtlUsed!=0x2C1){
+          if(overwriteAttemped && flowCtlUsed!=CAN_ID_DISPLAY_WRITE){
             twai_transmit(&DummyFirstFrame, pdMS_TO_TICKS(100));  // transmit a dummy frame ASAP to invalidate previous display call
             DEBUG_PRINTLN("CAN: Attempting to invalidate radio's screen call...");
             overwriteAttemped=0;
@@ -252,7 +252,7 @@ void canReceiveTask(void *pvParameters){
         }
         default: break;
       }
-      if(Recvd_CAN_MSG.identifier==flowCtlUsed && Recvd_CAN_MSG.identifier!=0x2C1 && Recvd_CAN_MSG.data[0]==0x30){ // can't be a switch case because it might be dynamic
+      if(Recvd_CAN_MSG.identifier==flowCtlUsed && Recvd_CAN_MSG.identifier!=CAN_ID_DISPLAY_WRITE && Recvd_CAN_MSG.data[0]==0x30){ // can't be a switch case because it might be dynamic
         xTaskNotifyGive(canDisplayTaskHandle);
       }
     }
@@ -330,7 +330,7 @@ void canProcessTask(void *pvParameters){
   while(1){
     xQueueReceive(canRxQueue, &RxMsg, portMAX_DELAY);     // receives data from the internal queue
     switch(RxMsg.identifier){
-      case 0x201: {                                         // radio button decoder
+      case CAN_ID_SWC_SCROLL: {                                         // radio button decoder
         bool btn_state=RxMsg.data[0];
         unsigned int btn_ms_held=(RxMsg.data[2]*100);
         switch(RxMsg.data[1]){
@@ -358,7 +358,7 @@ void canProcessTask(void *pvParameters){
         }
         break;
       }
-      case 0x206: {                                  // decodes steering wheel buttons
+      case CAN_ID_SWC_BUTTON: {                                  // decodes steering wheel buttons
         if(checkFlag(bt_connected) && RxMsg.data[0]==0x0 && checkFlag(CAN_allowAutoRefresh)){                     // makes sure "Aux" is displayed, otherwise forward/next buttons will have no effect
           switch(RxMsg.data[1]){
             case 0x81:{
@@ -384,7 +384,7 @@ void canProcessTask(void *pvParameters){
         }
         break;
       }
-      case 0x208: {                               // AC panel button event
+      case CAN_ID_AC_BUTTON: {                               // AC panel button event
         if(eTaskGetState(canAirConMacroTaskHandle)==eSuspended){
           if(RxMsg.data[0]==0x01 && RxMsg.data[1]==0x17 && RxMsg.data[2]==0x0){     // button pressed, start save timestamp
             millis_EccKnobPressed=millis();
@@ -402,17 +402,17 @@ void canProcessTask(void *pvParameters){
         } // should be an else here to implement something to stop the macro task, can't be bothered to implement this now
         break;
       }
-      case 0x2C1: {
+      case CAN_ID_DISPLAY_WRITE: {
         if(RxMsg.data[2]!=0 && canISO_frameSpacing!=RxMsg.data[2]) canISO_frameSpacing=RxMsg.data[2];            // adjust ISO 15765-2 frame spacing delay only if the receiving node calls for it
         break;
       }
-      case 0x501: {                                         // CD30MP3 goes to sleep -> disable bluetooth connectivity
+      case CAN_ID_RADIO_POWER: {                                         // CD30MP3 goes to sleep -> disable bluetooth connectivity
         if(checkFlag(a2dp_started) && RxMsg.data[3]==0x18){
           a2dp_shutdown();
         }
         break;
       }
-      case 0x546: {                             // display measurement blocks (used as a fallback or for )
+      case CAN_ID_DIS_RESPONSE: {                             // display measurement blocks (used as a fallback or for )
           if(disp_mode==1 || disp_mode==2){
             xSemaphoreTake(BufferSemaphore, portMAX_DELAY);
             DEBUG_PRINT("CAN: Got measurements from DIS: ");
@@ -453,7 +453,7 @@ void canProcessTask(void *pvParameters){
           }
         break;
       }
-      case 0x548: {                             // AC measurement blocks
+      case CAN_ID_ECC_RESPONSE: {                             // AC measurement blocks
           if(disp_mode==1 || disp_mode==2) xSemaphoreTake(BufferSemaphore, portMAX_DELAY);    // if we're in body data mode, take the semaphore to prevent the buffer being modified while the display message is being compiled
           DEBUG_PRINT("CAN: Got measurements from ECC: ");
           switch(RxMsg.data[0]){              // measurement block ID -> update data which the message is referencing
@@ -502,7 +502,7 @@ void canProcessTask(void *pvParameters){
           if(disp_mode==1 || disp_mode==2) xSemaphoreGive(BufferSemaphore);  // let the message processing continue
         break;
       }
-      case 0x6C1: {                                         // radio requests a display update
+      case CAN_ID_RADIO_DISPLAY: {                                         // radio requests a display update
         if(!checkFlag(a2dp_started)){
           setFlag(ehu_started);                    // start the bluetooth A2DP service after first radio display call
           disp_mode=0;
@@ -519,10 +519,10 @@ void canProcessTask(void *pvParameters){
         xTaskNotifyGive(canWatchdogTaskHandle);    // reset the watchdog
         break;
       }
-      case 0x6C8: {
-        /* 0x6C8 is transmitted by the ECC module.  Its presence confirms that
-         * the vehicle has electronic climate control, enabling the ECC-specific
-         * measurement request messages (Msg_MeasurementRequestECC etc.). */
+      case CAN_ID_ECC_PRESENCE: {
+        /* CAN_ID_ECC_PRESENCE (0x6C8) is transmitted by the ECC module.  Its presence
+         * confirms that the vehicle has electronic climate control, enabling the
+         * ECC-specific measurement request messages (Msg_MeasurementRequestECC etc.). */
         if(!checkFlag(ECC_present)) setFlag(ECC_present);
         break;
       }
