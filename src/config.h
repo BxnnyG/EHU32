@@ -80,7 +80,11 @@
 // ============================================================================
 // OTA WiFi Configuration
 // ============================================================================
-#define OTA_SSID         "EHU32-OTA"
+// Note: The hotspot SSID is generated dynamically at runtime as "EHU32-XXYY"
+// where XXYY are the last two bytes of the device's soft-AP MAC address.
+// This makes each unit uniquely identifiable on the network.
+// To change the password, update OTA_PASSWORD here — it is applied to both
+// WiFi.softAP() and ArduinoOTA.setPassword() in OTA.ino automatically.
 #define OTA_PASSWORD     "ehu32updater"
 #define OTA_TIMEOUT_MS   600000   // 10 minutes timeout before auto-reset
 
