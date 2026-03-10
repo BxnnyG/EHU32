@@ -40,6 +40,10 @@ Welcome to the EHU32 documentation hub. EHU32 brings Bluetooth audio to Opel/Vau
 | [compilation-guide.md](compilation-guide.md) | Arduino IDE settings, sdkconfig, flashing |
 | [troubleshooting.md](troubleshooting.md) | Common issues and fixes |
 | [faq.md](faq.md) | Frequently asked questions |
+| **Community knowledge** | |
+| [known-issues-and-solutions.md](known-issues-and-solutions.md) | Recurring problems and confirmed solutions from community discussions |
+| [community-knowledge.md](community-knowledge.md) | ESP32 board compatibility, display limits, data availability, device tips |
+| [radio-specific-notes.md](radio-specific-notes.md) | Radio-specific technical details: CD30, CD40, CD70, DVD90, CDC40 Opera |
 | **Installation guides** | |
 | [installation-cd30-cd30mp3.md](installation-cd30-cd30mp3.md) | CD30 / CD30 MP3 internal installation |
 | [installation-cd40usb.md](installation-cd40usb.md) | CD40 USB internal installation |
