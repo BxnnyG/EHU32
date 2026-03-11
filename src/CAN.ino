@@ -1,29 +1,132 @@
+/*
+ * CAN.ino — CAN bus communication layer using the ESP-IDF TWAI driver
+ *
+ * This file covers every aspect of EHU32's CAN (MS-CAN, 95 kbit/s) interaction:
+ *   - TWAI driver initialisation (twai_init)
+ *   - Inbound frame reception, filtering and routing (canReceiveTask)
+ *   - Inbound frame decoding and business logic (canProcessTask)
+ *   - Outbound frame transmission with alert monitoring (canTransmitTask)
+ *   - ISO 15765-2 (DoCAN) multi-packet display update (canDisplayTask,
+ *     prepareMultiPacket)
+ *   - Air-conditioning panel macro playback (canAirConMacroTask)
+ *   - "Aux" string detection in the display data stream (canMessageDecoder)
+ *   - Measurement block request helpers (requestMeasurementBlocks,
+ *     requestCoolantTemperature)
+ *   - Radio button long-press action handlers (canActionEhuButton0–9)
+ *   - DEBUG-only serial simulation task (CANsimTask)
+ *
+ * CAN bus speed: ~95.24 kbit/s — the GM/Vauxhall/Opel MS-CAN (Middle Speed CAN)
+ * used by all NCDC-generation radios (CD30, CD30MP3, CD40USB, CD70, DVD90).
+ *
+ * ISO 15765-2 framing (used for all display messages):
+ *   First frame (FF)       — byte 0 = 0x10 (or 0x11 for >255 byte payloads)
+ *   Consecutive frame (CF) — byte 0 = 0x21 … 0x2F, then 0x20, 0x21, …
+ *   Flow control (FC)      — byte 0 = 0x30 (Continue to Send) from display
+ *
+ * CAN ID reference (JJToB MS-CAN database):
+ *   0x201  — Radio panel button events (scroll wheel)
+ *   0x206  — Steering wheel button events
+ *   0x208  — AC panel button events
+ *   0x246  — DIS (Driver Information System / display module) diagnostic channel
+ *   0x248  — ECC (Electronic Climate Control) diagnostic channel
+ *   0x2C1  — Flow-control / abort frame from display to radio (response to 0x6C1)
+ *   0x501  — Radio/head unit general status messages
+ *   0x546  — DIS measurement block response
+ *   0x548  — ECC measurement block response
+ *   0x6C1  — Radio → display ISO 15765-2 transmissions (stock display source)
+ *   0x6C8  — ECC → display transmissions (confirms ECC presence)
+ *   0x6C0–0x6CF — Used for EHU32's own display transmissions (one unused ID
+ *                  is selected automatically at first boot)
+ *
+ * Dependencies:
+ *   - ESP-IDF TWAI driver (driver/twai.h, bundled with Arduino ESP32 core)
+ *   - Global variables and RTOS handles declared in EHU32.ino
+ */
+
 #include "driver/twai.h"
 
 void OTAhandleTask(void* pvParameters);
 
-// CAN-related variables
-volatile uint8_t canISO_frameSpacing=0;   // simple implementation of ISO 15765-2 variable frame spacing, based on flow control frames by the receiving node
+/* canISO_frameSpacing — inter-frame delay (in ms) between consecutive ISO 15765-2
+ * frames, requested by the receiving node inside its flow-control frame (byte 2 =
+ * STmin).  Most display units request 0 ms (no delay) or 2 ms.  Updated live in
+ * canProcessTask when a 0x2C1 flow-control response is received. */
+volatile uint8_t canISO_frameSpacing=0;
 
-// defining static CAN frames for simulation
-const twai_message_t  simulate_scroll_up={ .identifier=CAN_ID_SWC_SCROLL, .data_length_code=3, .data={0x08, 0x6A, 0x01}},
-                      simulate_scroll_down={ .identifier=CAN_ID_SWC_SCROLL, .data_length_code=3, .data={0x08, 0x6A, 0xFF}},
-                      simulate_scroll_press={ .identifier=CAN_ID_SWC_BUTTON, .data_length_code=3, .data={0x01, 0x84, 0x0}},
-                      simulate_scroll_release={ .identifier=CAN_ID_SWC_BUTTON, .data_length_code=3, .data={0x0, 0x84, 0x02}},
-                      Msg_ACmacro_down={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x08, 0x16, 0x01}},
-                      Msg_ACmacro_up={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x08, 0x16, 0xFF}},
-                      Msg_ACmacro_press={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x01, 0x17, 0x0}},
-                      Msg_ACmacro_release={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x0, 0x17, 0x02}},
-                      Msg_MeasurementRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=7, .data={0x06, 0xAA, 0x01, 0x01, 0x0B, 0x0E, 0x13}},
-                      Msg_MeasurementRequestECC={ .identifier=CAN_ID_ECC_REQUEST, .data_length_code=7, .data={0x06, 0xAA, 0x01, 0x01, 0x07, 0x10, 0x11}},
-                      Msg_VoltageRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x13}},
-                      Msg_CoolantRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x0B}},
-                      Msg_CoolantRequestECC={ .identifier=CAN_ID_ECC_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x10}};
+/* ──────────────────────────── Static CAN Message Definitions ────────────────────
+ *
+ * Scroll wheel / radio panel (CAN_ID_SWC_SCROLL = 0x201, 3 bytes):
+ *   Byte 0: button state (0x08 = scroll event, 0x01 = pressed, 0x00 = released)
+ *   Byte 1: button identifier (0x6A = scroll wheel)
+ *   Byte 2: step value (0x01 = one step up / clockwise, 0xFF = one step down)
+ *
+ * Scroll wheel button press (CAN_ID_SWC_BUTTON = 0x206, 3 bytes):
+ *   Byte 0: state (0x01 = pressed, 0x00 = released)
+ *   Byte 1: button identifier (0x84 = scroll wheel centre button)
+ *   Byte 2: hold counter (0x00 = initial press, 0x02 = released)
+ *
+ * AC panel knob (CAN_ID_AC_BUTTON = 0x208, 3 bytes):
+ *   Byte 0: event type (0x08 = scroll, 0x01 = pressed, 0x00 = released)
+ *   Byte 1: button identifier (0x16 = temp knob scroll, 0x17 = temp knob press)
+ *   Byte 2: step value (0x01 = up, 0xFF = down, 0x00 = press, 0x02 = release)
+ *
+ * Measurement request to DIS (CAN_ID_DIS_REQUEST = 0x246, up to 7 bytes, KWP-2000 format):
+ *   {0x06, 0xAA, 0x01, 0x01, block0, block1, block2}
+ *   0xAA = ReadDataByLocalIdentifier service, 0x01 0x01 = parameter group
+ *   block IDs: 0x0B=coolant, 0x0E=speed, 0x13=battery voltage
+ *
+ * Measurement request to ECC (CAN_ID_ECC_REQUEST = 0x248, same KWP-2000 format):
+ *   block IDs: 0x07=battery voltage, 0x10=coolant, 0x11=RPM+speed
+ *
+ * Voltage / coolant single-block requests (CAN_ID_DIS_REQUEST or CAN_ID_ECC_REQUEST, 5 bytes):
+ *   {0x04, 0xAA, 0x01, 0x01, blockID}
+ * ──────────────────────────────────────────────────────────────────────────────── */
+const twai_message_t  simulate_scroll_up={ .identifier=CAN_ID_SWC_SCROLL, .data_length_code=3, .data={0x08, 0x6A, 0x01}},       // scroll wheel: one step up
+                      simulate_scroll_down={ .identifier=CAN_ID_SWC_SCROLL, .data_length_code=3, .data={0x08, 0x6A, 0xFF}},     // scroll wheel: one step down
+                      simulate_scroll_press={ .identifier=CAN_ID_SWC_BUTTON, .data_length_code=3, .data={0x01, 0x84, 0x0}},    // scroll wheel centre: pressed
+                      simulate_scroll_release={ .identifier=CAN_ID_SWC_BUTTON, .data_length_code=3, .data={0x0, 0x84, 0x02}},  // scroll wheel centre: released
+                      Msg_ACmacro_down={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x08, 0x16, 0x01}},        // AC temp knob: one step down (towards cooler)
+                      Msg_ACmacro_up={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x08, 0x16, 0xFF}},          // AC temp knob: one step up (towards warmer)
+                      Msg_ACmacro_press={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x01, 0x17, 0x0}},        // AC temp knob: pressed
+                      Msg_ACmacro_release={ .identifier=CAN_ID_AC_BUTTON, .data_length_code=3, .data={0x0, 0x17, 0x02}},      // AC temp knob: released
+                      Msg_MeasurementRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=7, .data={0x06, 0xAA, 0x01, 0x01, 0x0B, 0x0E, 0x13}},  // request coolant + speed + voltage from DIS
+                      Msg_MeasurementRequestECC={ .identifier=CAN_ID_ECC_REQUEST, .data_length_code=7, .data={0x06, 0xAA, 0x01, 0x01, 0x07, 0x10, 0x11}},  // request voltage + coolant + RPM/speed from ECC
+                      Msg_VoltageRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x13}},      // request battery voltage from DIS only
+                      Msg_CoolantRequestDIS={ .identifier=CAN_ID_DIS_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x0B}},     // request coolant temperature from DIS only
+                      Msg_CoolantRequestECC={ .identifier=CAN_ID_ECC_REQUEST, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x10}};     // request coolant temperature from ECC only
 
-// can't initialize the values of the union inside the twai_message_t type struct, which is why it's defined here, then the transmit task sets the .ss flag
+/* Msg_PreventDisplayUpdate — sent to CAN_ID_DISPLAY_WRITE (0x2C1) immediately after
+ * the radio's 0x6C1 first frame is detected.  This is a forged ISO 15765-2 flow-control
+ * "Continue to Send" frame: {0x30, 0x00, 0x7F, …} where 0x30=CTS, 0x00=no block limit,
+ * 0x7F=127 ms minimum inter-frame spacing (maximum allowed by the standard).
+ * By replying to the radio's first frame ourselves, we consume the radio's
+ * transmission slot and can then transmit EHU32's own first frame in its place.
+ *
+ * Msg_AbortTransmission — sends {0x32, …} to CAN_ID_DISPLAY_WRITE (0x2C1), which is an
+ * ISO 15765-2 "Abort" flow-control value.  Forces the radio to stop its current
+ * multi-frame sequence.  Use only as a last resort since some displays react to 0x32
+ * with a soft-reset.
+ *
+ * Note: the .ss (single-shot) flag cannot be set via the designated initialiser
+ * because it lives inside a union in twai_message_t.  It is set in canReceiveTask
+ * and canTransmitTask at runtime. */
 twai_message_t  Msg_PreventDisplayUpdate={ .identifier=CAN_ID_DISPLAY_WRITE, .data_length_code=8, .data={0x30, 0x0, 0x7F, 0, 0, 0, 0, 0}},
                 Msg_AbortTransmission={ .identifier=CAN_ID_DISPLAY_WRITE, .data_length_code=8, .data={0x32, 0x0, 0, 0, 0, 0, 0, 0}};     // can have unforseen consequences such as resets! use as last resort
 
+/* twai_init() — initialise the ESP-IDF TWAI (CAN) driver at 95 kbit/s.
+ *
+ * Pin assignment:   TX = GPIO 5  (to SN65HVD230 TXD pin)
+ *                   RX = GPIO 4  (from SN65HVD230 RXD pin, also ext0 wake-up)
+ * Bus speed:        95 kbit/s (MS-CAN)
+ *   Timing: APB clock = 80 MHz, prescaler brp=42 → tq = 42/80MHz = 0.525 µs
+ *   tseg_1=15, tseg_2=4, sjw=3  → bit time = (1+15+4)*0.525 µs ≈ 10.5 µs → 95.24 kbit/s
+ * RX queue:         40 frames (hardware TWAI RX FIFO size)
+ * TX queue:         5 frames
+ * Alert:            TWAI_ALERT_TX_SUCCESS only (used by canTransmitTask to detect
+ *                   successful first-frame delivery and signal canDisplayTask)
+ * Filter:           accept all frames (software filtering is done in canReceiveTask)
+ * ISR priority:     NMI + IRAM for lowest possible latency on RX/TX interrupts
+ */
 // initializing CAN communication
 void twai_init(){
   twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);         // CAN bus set up
@@ -51,6 +154,38 @@ void twai_init(){
   }
 }
 
+/* canReceiveTask — Core 1, priority 1
+ *
+ * Purpose: read every TWAI frame from the hardware FIFO and handle
+ *          time-critical operations synchronously, then forward everything
+ *          else to canProcessTask via canRxQueue.
+ *
+ * Special case — 0x6C1 (radio → display first frame):
+ *   When the radio sends its display-update first frame we must respond with
+ *   our own flow-control frame (Msg_PreventDisplayUpdate) within ~1 ms to
+ *   "steal" the radio's ISO 15765-2 session.  If CAN_allowAutoRefresh is set
+ *   (i.e. "Aux" is currently displayed) and disp_mode is not -1, this task
+ *   transmits Msg_PreventDisplayUpdate directly — bypassing canTxQueue to
+ *   avoid queueing latency — then resumes canDisplayTask so it can transmit
+ *   EHU32's replacement message immediately.
+ *
+ *   The specific 0x6C1 header patterns intercepted are:
+ *     data[0]=0x10 (first frame), data[2]=0x40 (standard update),
+ *     data[2]=0xC0 (alternative), or data[1]=0x4A + data[2]=0x50 (CD70/DVD90),
+ *     data[5]=0x03 (type marker that identifies a text display update).
+ *
+ * Fallback — when displayMsgIdentifier is 0x6C1 (stock ID):
+ *   The flow-control frame for EHU32's own first frame also arrives on 0x2C1.
+ *   This task uses firstAckReceived to skip the radio's flow-control frame and
+ *   pass only EHU32's own flow-control frame to canDisplayTask.
+ *
+ * Filtered IDs forwarded to canRxQueue:
+ *   0x201  scroll wheel events        0x206  steering wheel buttons
+ *   0x208  AC panel events            0x501  radio status
+ *   0x546  DIS measurement response   0x548  ECC measurement response
+ *   0x4E8  (reserved, logged only)    0x6C8  ECC presence confirmation
+ *   0x6C1  radio display data         (also decoded by canProcessTask)
+ */
 // this task only reads CAN messages, filters them and enqueues them to be decoded ansynchronously. 0x6C1 is a special case, as the radio message has to be blocked ASAP
 void canReceiveTask(void *pvParameters){
   static twai_message_t Recvd_CAN_MSG, DummyFirstFrame={ .identifier=CAN_ID_RADIO_DISPLAY, .data_length_code=8, .data={0x10, 0xA7, 0x50, 0x00, 0xA4, 0x03, 0x10, 0x13}};
@@ -124,6 +259,69 @@ void canReceiveTask(void *pvParameters){
   }
 }
 
+/* canProcessTask — Core 0, priority 2
+ *
+ * Purpose: decode all incoming CAN frames that have been pre-filtered by
+ *          canReceiveTask and queued in canRxQueue.  Runs at priority 2 so it
+ *          can pre-empt canTransmitTask (priority 1) when new data arrives.
+ *
+ * Handled CAN IDs:
+ *
+ *   0x201 — Radio panel button event (scroll wheel / numeric buttons)
+ *     data[0]: button state bitmask
+ *     data[1]: button ID (0x30–0x39 → buttons 0–9, 0x6A → scroll wheel)
+ *     data[2]: hold time counter (×100 ms) or scroll step
+ *     → Dispatches to canActionEhuButton0–9()
+ *
+ *   0x206 — Steering wheel remote control button event (released state only)
+ *     data[0]: 0x00 = button released
+ *     data[1]: button ID
+ *       0x81 = left thumb button (play/pause toggle, disabled if UHP present)
+ *       0x91 = right upper button (next track)
+ *       0x92 = right lower button (previous track)
+ *     Only active when Bluetooth is connected AND "Aux" is displayed.
+ *
+ *   0x208 — AC panel (ECC) knob event
+ *     data[0/1/2]: press/scroll/release event for the AC temperature knob.
+ *     A long-press (≥400 ms or byte 2 ≥ 0x05) resumes canAirConMacroTask.
+ *     Vectra C ECCs report a clean hold counter in byte 2 (0x05+); older
+ *     Astra/Corsa/Zafira ECCs only send press+immediate release so elapsed
+ *     time is measured with millis() instead.
+ *
+ *   0x2C1 — Display flow-control / frame spacing update
+ *     data[2]: STmin (minimum inter-frame spacing in ms) requested by the
+ *              display module.  canISO_frameSpacing is updated if the value
+ *              changed, which canDisplayTask uses in its inter-frame delay.
+ *
+ *   0x501 — Radio general status
+ *     data[3] = 0x18 → radio is shutting down → trigger a2dp_shutdown().
+ *
+ *   0x546 — DIS (display module) measurement block response (KWP-2000)
+ *     data[0]: block ID
+ *       0x0B — coolant temperature: data[5] - 40 = °C
+ *       0x0E — vehicle speed:       (data[2]<<8 | data[3]) / 128 = km/h
+ *       0x13 — battery voltage:     data[6] / 10 = V
+ *     Once all three flags (CAN_voltage_recvd, CAN_coolant_recvd,
+ *     CAN_speed_recvd) are set, CAN_new_dataSet_recvd is raised.
+ *
+ *   0x548 — ECC (climate control) measurement block response (KWP-2000)
+ *     data[0]: block ID
+ *       0x07 — battery voltage: data[2] / 10 = V
+ *              If the value is outside 9–16 V, the Vectra-C erratic-voltage
+ *              bypass is activated and subsequent voltage reads fall back to DIS.
+ *       0x10 — coolant temperature: (data[3]<<8 | data[4]) / 10 = °C
+ *       0x11 — RPM + speed: (data[1]<<8 | data[2]) = RPM, data[4] = km/h
+ *
+ *   0x6C1 — Radio → display first frame / consecutive frame
+ *     Used for two purposes:
+ *     a) First boot detection (ehu_started / a2dp reconnect trigger)
+ *     b) In audio metadata mode (disp_mode==0): raw payload bytes are
+ *        forwarded to canDispQueue for Aux pattern detection.
+ *     Also resets the watchdog timer via xTaskNotifyGive(canWatchdogTaskHandle).
+ *
+ *   0x6C8 — ECC module heartbeat
+ *     Sets ECC_present flag to indicate ECC is available for measurements.
+ */
 // this task processes filtered CAN frames read from canRxQueue
 void canProcessTask(void *pvParameters){
   static twai_message_t RxMsg;
@@ -322,7 +520,10 @@ void canProcessTask(void *pvParameters){
         break;
       }
       case CAN_ID_ECC_PRESENCE: {
-        if(!checkFlag(ECC_present)) setFlag(ECC_present);            // adjust ISO 15765-2 frame spacing delay only if the receiving node calls for it
+        /* CAN_ID_ECC_PRESENCE (0x6C8) is transmitted by the ECC module.  Its presence
+         * confirms that the vehicle has electronic climate control, enabling the
+         * ECC-specific measurement request messages (Msg_MeasurementRequestECC etc.). */
+        if(!checkFlag(ECC_present)) setFlag(ECC_present);
         break;
       }
       default:    break;
@@ -330,6 +531,24 @@ void canProcessTask(void *pvParameters){
   }
 }
 
+/* canTransmitTask — Core 0, priority 1
+ *
+ * Purpose: dequeue outgoing CAN frames from canTxQueue and hand them to the
+ *          TWAI driver.  Monitors the TWAI_ALERT_TX_SUCCESS alert after every
+ *          transmission to detect whether the frame was acknowledged on the bus.
+ *
+ * Alert monitoring:
+ *   After each twai_transmit(), twai_read_alerts() is called with a 10 ms timeout.
+ *   If TWAI_ALERT_TX_SUCCESS is set and the transmitted frame was a first frame
+ *   (data[0] == 0x10 or 0x11) on displayMsgIdentifier, CAN_MessageReady is set
+ *   to tell canReceiveTask that a flow-control response (0x30) is now expected.
+ *   If transmission fails (queue full or TWAI error), CAN_prevTxFail is set
+ *   so canDisplayTask can decide to retry.
+ *
+ * Error recovery:
+ *   CAN_prevTxFail and CAN_abortMultiPacket are set on failure, causing
+ *   canDisplayTask to re-enter its send loop.
+ */
 // this task receives CAN messages from canTxQueue and transmits them asynchronously
 void canTransmitTask(void *pvParameters){
   static twai_message_t TxMessage;
@@ -458,6 +677,34 @@ void serialStringSplitter(char* input){
 }
 #endif
 
+/* canDisplayTask — Core 1, priority 1
+ *
+ * Purpose: implement the ISO 15765-2 (DoCAN) multi-packet transmission protocol
+ *          to send display messages to the car's instrument cluster / radio display.
+ *
+ * Protocol flow:
+ *   1. Take CAN_MsgSemaphore (prevents writeTextToDisplay() from modifying the
+ *      buffer mid-transmission).
+ *   2. If CAN_flowCtlFail is set (previous block attempt failed), wait 300 ms for
+ *      the radio to finish its own transmission before we start ours.
+ *   3. Send CAN_MsgArray[0] (the first frame, FF) via canTxQueue.
+ *   4. Block on xTaskNotifyWait() indefinitely.  canReceiveTask or
+ *      canTransmitTask will call xTaskNotifyGive() when a flow-control frame
+ *      with byte 0 = 0x30 (CTS) is detected.
+ *   5. Once unblocked, send CAN_MsgArray[1..n] (consecutive frames, CF) one by
+ *      one, honouring canISO_frameSpacing between each frame.
+ *      The loop stops when:
+ *        - the next frame label is 0x00 (no more data), OR
+ *        - CAN_prevTxFail is set (TX error), OR
+ *        - CAN_abortMultiPacket is set (radio sent a new first frame while we
+ *          were still transmitting → our session is stale).
+ *   6. Release CAN_MsgSemaphore.
+ *   7. If retryTx is true, loop back to step 1.  Otherwise vTaskSuspend(NULL)
+ *      to wait for the next writeTextToDisplay() call.
+ *
+ * Note: canDisplayTask is kept suspended (vTaskSuspend) between transmissions
+ *       and resumed by writeTextToDisplay() or canReceiveTask.
+ */
 // this task implements ISO 15765-2 (multi-packet transmission over CAN frames) in a crude, but hopefully robust way in order to send frames to the display
 void canDisplayTask(void *pvParameters){
   static twai_message_t MsgToTx;
@@ -500,6 +747,24 @@ void canDisplayTask(void *pvParameters){
   }
 }
 
+/* canAirConMacroTask — Core 0, priority 10
+ *
+ * Purpose: simulate a sequence of AC panel knob events to toggle the AC
+ *          compressor on/off.  The sequence navigates the ECC menu:
+ *   1. Wait 500 ms (let the AC menu appear on screen after activation).
+ *   2. Knob one step down  (moves selection towards AC toggle)
+ *   3. Knob press + release (confirms selection)
+ *   4. Knob two steps up   (navigates away from the changed setting)
+ *   5. Knob press + release (confirms the second selection)
+ *
+ * Timing: 100 ms between each event.  The 500 ms initial delay is necessary
+ * because some ECC units take up to 400 ms to display the menu after the first
+ * input, and premature inputs are silently dropped.
+ *
+ * Lifecycle: created at startup but immediately suspended.  Resumed by
+ *            canProcessTask when the AC knob long-press gesture is detected.
+ *            Suspends itself again (vTaskSuspend(NULL)) after the sequence.
+ */
 // this task provides asynchronous simulation of button presses on the AC panel, quickly toggling AC
 void canAirConMacroTask(void *pvParameters){
   while(1){
@@ -521,6 +786,39 @@ void canAirConMacroTask(void *pvParameters){
   }
 }
 
+/* canMessageDecoder — Core 0, idle priority
+ *
+ * Purpose: scan the raw UTF-16 byte stream from the radio's 0x6C1 display
+ *          messages (queued byte-by-byte in canDispQueue) for specific text
+ *          patterns to determine whether EHU32 is allowed to overwrite the
+ *          display.
+ *
+ * "Aux" detection (pattern index 0):
+ *   When "Aux" appears on the display it means the radio's AUX input is
+ *   selected and EHU32 should overwrite the display with Bluetooth metadata.
+ *   The full UTF-16 LE pattern for the ESC-formatted "Aux" string is:
+ *     {0x00, 0x6D, 0x00, 0x41, 0x00, 0x75, 0x00, 0x78}
+ *   (the 0x00, 0x6D prefix is the tail end of the left-align ESC sequence)
+ *   On match: sets CAN_allowAutoRefresh and DIS_forceUpdate, records timestamp
+ *             in last_millis_aux for the 6-second timeout.
+ *
+ * Sound menu items (patterns 1–5): Fader, Balance, Bass, Treble, Sound Off
+ *   These appear on CD30/CD40 when the user enters the SOUND menu.  If EHU32
+ *   were to intercept these, the user could never adjust audio settings.
+ *   On match: clears CAN_allowAutoRefresh (lets the radio's message through).
+ *   UTF-16 LE patterns:
+ *     "Fader"    {0x46,0,0x61,0,0x64,0,0x65,0,0x72}
+ *     "Balance"  {0x42,0,0x61,0,0x6C,0,0x61,0,0x6E,0,0x63,0,0x65}
+ *     "Bass"     {0x42,0,0x61,0,0x73,0,0x73}
+ *     "Treble"   {0x54,0,0x72,0,0x65,0,0x62,0,0x6C,0,0x65}
+ *     "Sound Off"{0x53,0,0x6F,0,0x75,0,0x6E,0,0x64,0,0x20,0,0x4F,0,0x66,0,0x66}
+ *
+ * Aux timeout: if CAN_allowAutoRefresh is set but "Aux" has not appeared within
+ *              the last 6 seconds, CAN_allowAutoRefresh is automatically cleared
+ *              to prevent stale display updates after the user switches sources.
+ *
+ * Communication: receives bytes from canDispQueue (filled by canProcessTask).
+ */
 // this task monitors raw data contained within messages sent by the radio and looks for Aux string being printed to the display; rejects "Aux" in views such as "Audio Source" screen (CD70/DVD90)
 void canMessageDecoder(void *pvParameters){
   uint8_t rxDisplay;
@@ -585,6 +883,31 @@ void canMessageDecoder(void *pvParameters){
   }
 }
 
+/* prepareMultiPacket() — encode a flat byte buffer into ISO 15765-2 CAN frames.
+ *
+ * Parameters:
+ *   bytesProcessed  — total number of payload bytes to encode (from DisplayMsg).
+ *   buffer_to_read  — pointer to the source buffer (DisplayMsg).
+ *
+ * Output: CAN_MsgArray[][] is filled with labelled 8-byte frames ready for
+ *         sequential transmission by canDisplayTask.
+ *
+ * Frame structure (ISO 15765-2):
+ *   Frame 0  — First Frame (FF):
+ *     byte 0 = 0x10 (payload ≤ 255 bytes) or 0x11 (payload > 255 bytes, TODO)
+ *     bytes 1–7 = first 7 payload bytes
+ *   Frames 1..n — Consecutive Frames (CF):
+ *     byte 0 = 0x21, 0x22, … 0x2F, then wraps back to 0x20 (ISO sequence number)
+ *     bytes 1–7 = next 7 payload bytes
+ *   Last partial frame (if bytesProcessed % 7 != 0):
+ *     byte 0 = next sequence number
+ *     bytes 1..k = remaining bytes; bytes k+1..7 are left as zeros (padding)
+ *   Terminator: CAN_MsgArray[packetCount+1][0] = 0x00 to signal end of data
+ *               (canDisplayTask stops transmitting when it sees a 0x00 label).
+ *
+ * Note: proper DoCAN handling for payloads > 255 bytes is not yet implemented;
+ *       for those the first-frame header needs two additional length bytes.
+ */
 // loads formatted UTF16 data into CAN_MsgArray and labels the messages; needs to know how many bytes to load into the array; afterwards this array is ready to be transmitted with sendMultiPacket()
 void prepareMultiPacket(int bytesProcessed, char* buffer_to_read){             // longer CAN messages are split into appropriately labeled (the so called PCI) packets, starting with 0x21 up to 0x2F, then rolling back to 0x20
   int packetCount=bytesProcessed/7, bytesToProcess=bytesProcessed%7;

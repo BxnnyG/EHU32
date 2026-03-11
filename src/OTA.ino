@@ -28,9 +28,49 @@
 
 // Wi-Fi AP credentials – ssid is filled at runtime with the device MAC address
 char ssid[20];
-const char* password = OTA_PASSWORD;
+const char* password = OTA_PASSWORD;  // defined in config.h
+
+/* OTA state machine variables:
+ *
+ *   OTA_running    — set to true once WiFi.softAP() and ArduinoOTA.begin()
+ *                    succeed.  Prevents OTA_start() from being called twice.
+ *
+ *   OTA_finished   — set to true in the ArduinoOTA onEnd() callback when the
+ *                    firmware upload completes successfully.  OTA_Handle() then
+ *                    waits 1 s and calls ESP.restart() to boot the new firmware.
+ *
+ *   OTA_progressing — set to true in the ArduinoOTA onStart() callback and
+ *                     cleared in onEnd().  While true, the 10-minute idle
+ *                     timeout is suspended so an in-progress upload is never
+ *                     interrupted.
+ */
 volatile bool OTA_running=0, OTA_finished=0, OTA_progressing=0;
+
 #ifndef DEBUG
+/* OTA_start() — initialise Wi-Fi AP and ArduinoOTA.
+ *
+ * Steps:
+ *   1. Stop the A2DP sink (Bluetooth and Wi-Fi share the same radio on ESP32;
+ *      they cannot run simultaneously).
+ *   2. Build a unique SSID ("EHU32-XXYY") from the last two bytes of the
+ *      soft-AP MAC address to allow identifying the target unit.
+ *   3. Start the Wi-Fi soft-AP with the password "ehu32updater".
+ *      On failure, restart the ESP32.
+ *   4. Display the SSID and password on the car display.
+ *   5. Configure ArduinoOTA:
+ *      - mDNS disabled (not useful in a car environment).
+ *      - Reboot on success (boot the new firmware automatically).
+ *      - OTA password set (second authentication layer beyond the Wi-Fi password).
+ *      - onStart: marks OTA_progressing=1.
+ *      - onProgress: updates the display every 10% of progress.
+ *      - onError: displays the error reason and restarts after 3 s.
+ *        Errors: OTA_AUTH_ERROR (wrong password), OTA_BEGIN_ERROR (flash init),
+ *                OTA_CONNECT_ERROR (upload client disconnected), OTA_RECEIVE_ERROR,
+ *                OTA_END_ERROR (flash finalisation failed).
+ *      - onEnd: clears NVS settings (forces fresh CAN setup after update)
+ *               and marks OTA_finished=1.
+ *   6. Set OTA_running=1.
+ */
 // initialize OTA functionality as a way to update firmware; this disables A2DP functionality!
 void OTA_start(){
   //twai_stop();
@@ -109,6 +149,25 @@ void OTA_start(){
   }
 }
 
+/* OTA_Handle() — main OTA event loop; called from eventHandlerTask when
+ *                OTA_begin is set (button 8 held ≥1 s).  Blocks forever.
+ *
+ * Flow:
+ *   1. Wait (polling every 1 s) until OTA_begin is set.
+ *   2. If OTA_running is false, call OTA_start() and record the start time.
+ *   3. Call ArduinoOTA.handle() repeatedly to process incoming UDP packets.
+ *   4. Timeout (10 minutes): if !OTA_progressing and 600 000 ms have elapsed
+ *      since OTA_start(), call ESP.restart() to exit OTA mode.
+ *   5. Internal watchdog: when OTA is running but idle (!progressing, !finished),
+ *      vTaskDelay(1) yields to the FreeRTOS watchdog timer.
+ *   6. Abort: if OTA_abort is set (button 8 held ≥5 s) and no upload is in
+ *      progress, call ESP.restart() immediately.
+ *   7. Success: if OTA_finished is set (upload complete), wait 1 s and restart
+ *      to boot the new firmware.
+ *
+ * Note: `time_started` is initialised to 0 and set to millis() only after
+ *       OTA_start() succeeds, so the 10-minute timer begins at AP start time.
+ */
 void OTA_Handle(){
   unsigned long time_started=0;
   while(1){
